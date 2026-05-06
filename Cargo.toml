@@ -1,0 +1,10 @@
+[package]
+name = "dolfin-analysis"
+version = "0.1.3"
+edition = "2024"
+description = "Semantic analysis for the Dolfin ontology language"
+
+[dependencies]
+rowl = "0.1.3"
+dolfin-diagnostic = "0.1.3"
+thiserror = "2.0.18"
