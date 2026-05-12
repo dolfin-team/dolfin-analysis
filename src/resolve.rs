@@ -70,6 +70,7 @@ pub fn resolve_file(file: &OntologyFile, index: &SymbolIndex) -> ResolvedFile {
                 resolve_type_ref(&p.range, index, &mut result);
             }
             Declaration::Rule(_) => {}
+            Declaration::Fact(_) => {}
         }
     }
 

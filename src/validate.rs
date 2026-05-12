@@ -86,7 +86,11 @@ fn check_circular(file: &OntologyFile, diags: &mut Vec<Diagnostic>) {
                 if node == start {
                     let span = file.declarations.iter().find_map(|d| {
                         if let Declaration::Concept(c) = d {
-                            if c.name.get().as_str() == start { c.span } else { None }
+                            if c.name.get().as_str() == start {
+                                c.span
+                            } else {
+                                None
+                            }
                         } else {
                             None
                         }
@@ -114,6 +118,7 @@ fn decl_name_span(decl: &Declaration) -> (&str, Option<rowl::error::Span>) {
         Declaration::Concept(c) => (c.name.get().as_str(), c.span),
         Declaration::Property(p) => (&p.name.get(), p.span),
         Declaration::Rule(r) => (&r.name, r.span),
+        Declaration::Fact(f) => (&f.id, f.span),
     }
 }
 

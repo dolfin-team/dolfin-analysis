@@ -63,6 +63,7 @@ impl FileSymbols {
                 Declaration::Concept(c) => fs.insert_concept(c, path),
                 Declaration::Property(p) => fs.insert_property(p, path),
                 Declaration::Rule(r) => fs.insert_rule(r, path),
+                Declaration::Fact(_) => {}
             }
         }
         fs

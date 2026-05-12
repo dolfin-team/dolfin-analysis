@@ -87,7 +87,7 @@ dependencies = [
 
 [[package]]
 name = "dolfin-analysis"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "dolfin-diagnostic",
  "rowl",
@@ -413,9 +413,9 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rowl"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3e918a7b6cae73ffd923955a384c0edaf0c1b6515ac8f7ad18134e639f2136d"
+checksum = "023aa56bc9ef065b6a4b8d869159b38e4a9975b82d1a544bc8263d7c3f827fa4"
 dependencies = [
  "dolfin-diagnostic",
  "lalrpop",

@@ -81,6 +81,7 @@ pub fn check_types(file: &OntologyFile, index: &SymbolIndex) -> Vec<Diagnostic> 
             }
 
             Declaration::Rule(_) => {}
+            Declaration::Fact(_) => {}
         }
     }
 
@@ -88,7 +89,11 @@ pub fn check_types(file: &OntologyFile, index: &SymbolIndex) -> Vec<Diagnostic> 
 }
 
 fn check_cardinality(card: &Cardinality, span: Option<Span>, diags: &mut Vec<Diagnostic>) {
-    if let Cardinality::Range { min, max: Some(max), .. } = card {
+    if let Cardinality::Range {
+        min,
+        max: Some(max),
+        ..
+    } = card {
         if min > max {
             diags.push(
                 DiagnosticBuilder::error(

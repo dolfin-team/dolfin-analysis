@@ -36,6 +36,7 @@ pub fn find_references_in_file(file: &OntologyFile, target: &str) -> Vec<Span> {
             Declaration::Rule(r) => {
                 collect_rule(r, target, &mut out);
             }
+            Declaration::Fact(_) => {}
         }
     }
     out
@@ -129,7 +130,13 @@ mod tests {
         let file = parse(src);
         let refs = find_references_in_file(&file, "has_owner");
         // Two references: one in match triple, one in then assertion triple
-        assert_eq!(refs.len(), 2, "expected 2 refs to has_owner in rule, got {}: {:?}", refs.len(), refs);
+        assert_eq!(
+            refs.len(),
+            2,
+            "expected 2 refs to has_owner in rule, got {}: {:?}",
+            refs.len(),
+            refs
+        );
     }
 
     #[test]
@@ -137,7 +144,10 @@ mod tests {
         let src = "concept Animal\nproperty has_owner: Animal -> Animal\nrule set_owner:\n  match:\n    ?x a Animal\n  then:\n    ?x has_owner ?x\n";
         let file = parse(src);
         let refs = find_references_in_file(&file, "has_owner");
-        assert!(!refs.is_empty(), "expected at least one ref to has_owner in then block");
+        assert!(
+            !refs.is_empty(),
+            "expected at least one ref to has_owner in then block"
+        );
     }
 
     #[test]
@@ -145,6 +155,9 @@ mod tests {
         let src = "concept Animal\nproperty has_owner: Animal -> Animal\nproperty has_age: Animal -> string\nrule test_rule:\n  match:\n    ?x has_age ?y\n  then:\n    ?x has_age ?y\n";
         let file = parse(src);
         let refs = find_references_in_file(&file, "has_owner");
-        assert!(refs.is_empty(), "should not find has_owner refs in a rule using has_age");
+        assert!(
+            refs.is_empty(),
+            "should not find has_owner refs in a rule using has_age"
+        );
     }
 }
