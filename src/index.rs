@@ -9,8 +9,13 @@
 //! For single-file usage see [`SymbolIndex::from_file`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use rowl::{ConceptDef, Declaration, OntologyFile, PrefixDecl, PropertyDef, RuleDef, error::Span};
+use dolfin_units::Dimensions;
+use rowl::{ConceptDef, Declaration, FactDef, OntologyFile, PrefixDecl, PropertyDef, QualifiedName, QueryDef, RuleDef, TypeRef, UnitDef, error::Span};
+use rowl::comment::{Comment, CommentMap};
+
+use crate::infer::TypeIndex;
 
 // ── Symbol kind ──────────────────────────────────────────────────────────────
 
@@ -20,11 +25,14 @@ pub enum SymbolKind {
     Concept,
     Property,
     Rule,
+    Query,
     Prefix,
     /// A named individual declared in a concept's 'one of:' block.
     Individual {
         parent: String,
     },
+    /// A fact (ABox instance) declaration.
+    FactInstance,
 }
 
 // ── Symbol ───────────────────────────────────────────────────────────────────
@@ -42,6 +50,11 @@ pub struct Symbol {
     /// Source file path or URI this symbol originated from.
     /// `None` for symbols added without a file path (e.g. in tests).
     pub file: Option<String>,
+    /// For a `Property` symbol whose declared range is a well-known physical
+    /// dimension (its type ref's last name segment matches
+    /// `dolfin_units::named_dimension`, e.g. `has weight: unit.Mass`) — the
+    /// dimension a `quantity(...)` value assigned to it must have.
+    pub dimension: Option<Dimensions>,
 }
 
 // ── Per-file symbols ──────────────────────────────────────────────────────────
@@ -50,11 +63,34 @@ pub struct Symbol {
 #[derive(Debug, Default, Clone)]
 struct FileSymbols {
     symbols: HashMap<String, Symbol>,
+    /// `unitdef` declarations; project-wide, see [`SymbolIndex::units`].
+    units: Vec<UnitDef>,
+    /// The file's prefixes, concepts and properties: what
+    /// [`SymbolIndex::type_index`] needs (shared, so cloning the index is cheap).
+    schema: Option<Arc<OntologyFile>>,
+    /// The file's comments, for descriptions shown outside it (hover on a
+    /// reference in another file). Empty when indexed without comments.
+    comments: Arc<CommentMap>,
 }
 
 impl FileSymbols {
     fn from_ontology(file: &OntologyFile, path: Option<&str>) -> Self {
-        let mut fs = FileSymbols::default();
+        let mut fs = FileSymbols {
+            schema: Some(Arc::new(OntologyFile {
+                declarations: file
+                    .declarations
+                    .iter()
+                    .filter(|d| matches!(d, Declaration::Concept(_) | Declaration::Property(_)))
+                    .cloned()
+                    .collect(),
+                iri_name: None,
+                prefixes: file.prefixes.clone(),
+                locale: None,
+                timezone: None,
+                span: None,
+            })),
+            ..FileSymbols::default()
+        };
         for prefix in &file.prefixes {
             fs.insert_prefix(prefix, path);
         }
@@ -63,7 +99,11 @@ impl FileSymbols {
                 Declaration::Concept(c) => fs.insert_concept(c, path),
                 Declaration::Property(p) => fs.insert_property(p, path),
                 Declaration::Rule(r) => fs.insert_rule(r, path),
-                Declaration::Fact(_) => {}
+                Declaration::Query(q) => fs.insert_query(q, path),
+                Declaration::Fact(f) => fs.insert_fact(f, path),
+                // Unit declarations feed a separate project-wide unit registry
+                // (see `crate::units`), not the concept/property symbol map.
+                Declaration::Unit(u) => fs.units.push(u.clone()),
             }
         }
         fs
@@ -80,6 +120,7 @@ impl FileSymbols {
             definition_span: prefix.span,
             detail: format!("prefix {} → {}", prefix.alias, prefix.path),
             file: path.map(str::to_owned),
+            dimension: None,
         });
     }
 
@@ -96,6 +137,7 @@ impl FileSymbols {
             definition_span: c.span,
             detail,
             file: path.map(str::to_owned),
+            dimension: None,
         });
         if let Some(variants) = &c.one_of {
             for variant in variants {
@@ -104,11 +146,34 @@ impl FileSymbols {
                     kind: SymbolKind::Individual {
                         parent: c.name.get().clone(),
                     },
-                    definition_span: variant.span,
+                    definition_span: variant.name_span.or(variant.span),
                     detail: format!("individual {} of {}", variant.name, c.name.get()),
                     file: path.map(str::to_owned),
+                    dimension: None,
                 });
             }
+        }
+        // Properties declared inline in a concept's `has` block are real
+        // properties too — index them so references in queries/rules/facts
+        // (S004) don't see them as unknown. A top-level `property` decl with
+        // the same name wins (richer detail), so don't clobber an existing one.
+        for has in &c.has_declarations {
+            if self.symbols.contains_key(&has.name) {
+                continue;
+            }
+            self.insert(Symbol {
+                name: has.name.clone(),
+                kind: SymbolKind::Property,
+                definition_span: has.span,
+                detail: format!(
+                    "property {} of {}: {}",
+                    has.name,
+                    c.name.get(),
+                    has.type_ref
+                ),
+                file: path.map(str::to_owned),
+                dimension: dimension_of(&has.type_ref),
+            });
         }
     }
 
@@ -119,6 +184,7 @@ impl FileSymbols {
             definition_span: p.span,
             detail: format!("property {}: {} → {}", p.name.get(), p.domain, p.range),
             file: path.map(str::to_owned),
+            dimension: dimension_of(&p.range),
         });
     }
 
@@ -129,8 +195,47 @@ impl FileSymbols {
             definition_span: r.span,
             detail: format!("rule {}", r.name),
             file: path.map(str::to_owned),
+            dimension: None,
         });
     }
+
+    fn insert_query(&mut self, q: &QueryDef, path: Option<&str>) {
+        self.insert(Symbol {
+            name: q.name.clone(),
+            kind: SymbolKind::Query,
+            definition_span: q.span,
+            detail: format!("query {}", q.name),
+            file: path.map(str::to_owned),
+            dimension: None,
+        });
+    }
+
+    fn insert_fact(&mut self, f: &FactDef, path: Option<&str>) {
+        let type_names: Vec<String> = f.types.iter().map(|t| t.full()).collect();
+        let detail = if type_names.is_empty() {
+            format!("fact {}", f.id)
+        } else {
+            format!("fact {} a {}", f.id, type_names.join(", "))
+        };
+        self.insert(Symbol {
+            name: f.id.clone(),
+            kind: SymbolKind::FactInstance,
+            definition_span: f.span,
+            detail,
+            file: path.map(str::to_owned),
+            dimension: None,
+        });
+    }
+}
+
+/// If `type_ref` is a named reference whose last name segment matches a
+/// well-known physical dimension (`unit.Mass`, `Speed`, …), the dimension it
+/// denotes.
+fn dimension_of(type_ref: &TypeRef) -> Option<Dimensions> {
+    let TypeRef::Named { name, .. } = type_ref else {
+        return None;
+    };
+    dolfin_units::named_dimension(&name.last())
 }
 
 // ── SymbolIndex ───────────────────────────────────────────────────────────────
@@ -193,6 +298,15 @@ impl SymbolIndex {
         self.by_file.insert(path.to_owned(), fs);
     }
 
+    /// [`add_file`](Self::add_file), keeping `comments` so the leading
+    /// comments of its declarations can be read from other files.
+    pub fn add_file_with_comments(&mut self, path: &str, file: &OntologyFile, comments: CommentMap) {
+        self.add_file(path, file);
+        if let Some(fs) = self.by_file.get_mut(path) {
+            fs.comments = Arc::new(comments);
+        }
+    }
+
     /// Remove all symbols that originated from `path`.
     pub fn remove_file(&mut self, path: &str) {
         if let Some(fs) = self.by_file.remove(path) {
@@ -219,6 +333,37 @@ impl SymbolIndex {
     /// Look up a symbol restricted to a single file.
     pub fn get_in_file(&self, path: &str, name: &str) -> Option<&Symbol> {
         self.by_file.get(path)?.symbols.get(name)
+    }
+
+    /// Leading comments of the node at `span` in the file `path` (a symbol's
+    /// `file`), or in any file when `path` is `None`.
+    pub fn leading_comments(&self, path: Option<&str>, span: Span) -> &[Comment] {
+        match path {
+            Some(path) => self.by_file.get(path).map(|fs| fs.comments.leading_comments(&span)),
+            None => self.by_file.values().map(|fs| fs.comments.leading_comments(&span)).find(|c| !c.is_empty()),
+        }
+        .unwrap_or(&[])
+    }
+
+    /// Every `unitdef` declaration across all indexed files.
+    pub fn units(&self) -> impl Iterator<Item = &UnitDef> {
+        self.by_file.values().flat_map(|fs| fs.units.iter())
+    }
+
+    /// Type-inference view (hierarchy, inherited cardinalities) of every
+    /// indexed file, each under its file stem as namespace.
+    /// ponytail: rebuilt per call, O(package schema); cache it next to
+    /// `global` if it shows up in profiles.
+    pub fn type_index(&self) -> TypeIndex {
+        let files: Vec<(QualifiedName, &OntologyFile)> = self
+            .by_file
+            .iter()
+            .filter_map(|(path, fs)| {
+                let parts = file_stem(path).into_iter().collect();
+                Some((QualifiedName::new(parts, None), fs.schema.as_deref()?))
+            })
+            .collect();
+        TypeIndex::build(files.iter().map(|(ns, f)| (ns, *f)))
     }
 
     /// Iterate all symbols across all files.
@@ -256,6 +401,15 @@ impl SymbolIndex {
         self.global
             .values()
             .filter(|s| s.kind == SymbolKind::Concept)
+            .map(|s| s.name.as_str())
+            .collect()
+    }
+
+    /// All names that are valid properties.
+    pub fn property_names(&self) -> Vec<&str> {
+        self.global
+            .values()
+            .filter(|s| s.kind == SymbolKind::Property)
             .map(|s| s.name.as_str())
             .collect()
     }

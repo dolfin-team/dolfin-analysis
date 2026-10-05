@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use rowl::{
-    ConceptDef, Declaration, OntologyFile, PrefixDecl, PropertyDef, RuleDef,
+    ConceptDef, Declaration, OntologyFile, PrefixDecl, PropertyDef, QueryDef, RuleDef,
     error::Span,
 };
 
@@ -13,9 +13,12 @@ pub enum SymbolKind {
     Concept,
     Property,
     Rule,
+    Query,
     Prefix,
     /// A named individual declared in a concept's 'one of:' block.
     Individual { parent: String },
+    /// A fact (ABox instance) declaration.
+    FactInstance,
 }
 
 /// A resolved symbol with its definition site.
@@ -50,6 +53,8 @@ impl SymbolTable {
                 Declaration::Concept(c) => table.insert_concept(c),
                 Declaration::Property(p) => table.insert_property(p),
                 Declaration::Rule(r) => table.insert_rule(r),
+                Declaration::Query(q) => table.insert_query(q),
+                Declaration::Fact(f) => table.insert_fact(f),
             }
         }
 
@@ -121,6 +126,36 @@ impl SymbolTable {
                 kind: SymbolKind::Rule,
                 definition_span: r.span,
                 detail: format!("rule {}", r.name),
+            },
+        );
+    }
+
+    fn insert_fact(&mut self, f: &rowl::FactDef) {
+        let type_names: Vec<String> = f.types.iter().map(|t| t.full()).collect();
+        let detail = if type_names.is_empty() {
+            format!("fact {}", f.id)
+        } else {
+            format!("fact {} a {}", f.id, type_names.join(", "))
+        };
+        self.symbols.insert(
+            f.id.clone(),
+            Symbol {
+                name: f.id.clone(),
+                kind: SymbolKind::FactInstance,
+                definition_span: f.span,
+                detail,
+            },
+        );
+    }
+
+    fn insert_query(&mut self, q: &QueryDef) {
+        self.symbols.insert(
+            q.name.clone(),
+            Symbol {
+                name: q.name.clone(),
+                kind: SymbolKind::Query,
+                definition_span: q.span,
+                detail: format!("query {}", q.name),
             },
         );
     }

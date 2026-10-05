@@ -33,9 +33,11 @@
 
 pub mod diagnostics;
 pub mod index;
+pub mod infer;
 pub mod references;
 pub mod resolve;
 pub mod types;
+pub mod units;
 pub mod validate;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────

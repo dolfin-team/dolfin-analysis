@@ -70,6 +70,14 @@ fn hover_in_decl(
                 None
             }
         }
+        Declaration::Fact(_) => None,
+        Declaration::Query(q) => {
+            if span_contains(q.span, pos) {
+                table.get(&q.name).map(|s| markdown_symbol(s))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -93,6 +101,9 @@ fn hover_type_ref(type_ref: &TypeRef, table: &SymbolTable, pos: Location) -> Opt
             } else {
                 None
             }
+        }
+        TypeRef::Union { members, .. } => {
+            members.iter().find_map(|m| hover_type_ref(m, table, pos))
         }
     }
 }

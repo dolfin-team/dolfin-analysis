@@ -46,6 +46,8 @@ pub fn resolve(file: &OntologyFile, table: &SymbolTable) -> Vec<Diagnostic> {
                 check_type_ref(&p.range, table, &mut diags);
             }
             Declaration::Rule(_) => {}
+            Declaration::Fact(_) => {}
+            Declaration::Query(_) => {}
         }
     }
 
@@ -60,6 +62,8 @@ fn decl_name_span(decl: &Declaration) -> (&str, Option<Span>) {
         Declaration::Concept(c) => (&c.name, c.span),
         Declaration::Property(p) => (&p.name, p.span),
         Declaration::Rule(r) => (&r.name, r.span),
+        Declaration::Fact(f) => (&f.id, f.span),
+        Declaration::Query(q) => (&q.name, q.span),
     }
 }
 
@@ -68,20 +72,32 @@ fn check_has(has: &HasDeclaration, table: &SymbolTable, diags: &mut Vec<Diagnost
 }
 
 fn check_type_ref(type_ref: &TypeRef, table: &SymbolTable, diags: &mut Vec<Diagnostic>) {
-    if let TypeRef::Named { name, span } = type_ref {
-        let full = name.full();
-        let last = name.last();
-        // Accept primitives-by-name defensively, then try last segment first
-        // (unqualified reference) then the full qualified name.
-        if !table.is_declared_type(&last) && !table.is_declared_type(&full) {
-            diags.push(Diagnostic::error(
-                DiagnosticCode::UnresolvedType,
-                format!("type `{full}` is not declared"),
-                *span,
-            ));
+    match type_ref {
+        TypeRef::Named { name, span } => {
+            // External URI-prefix reference — skip local symbol check.
+            if name.is_prefixed {
+                return;
+            }
+            let full = name.full();
+            let last = name.last();
+            // Accept primitives-by-name defensively, then try last segment first
+            // (unqualified reference) then the full qualified name.
+            if !table.is_declared_type(&last) && !table.is_declared_type(&full) {
+                diags.push(Diagnostic::error(
+                    DiagnosticCode::UnresolvedType,
+                    format!("type `{full}` is not declared"),
+                    *span,
+                ));
+            }
         }
+        TypeRef::Union { members, .. } => {
+            for m in members {
+                check_type_ref(m, table, diags);
+            }
+        }
+        // Primitive refs are always valid.
+        TypeRef::Primitive { .. } => {}
     }
-    // Primitive refs are always valid.
 }
 
 fn check_circular_inheritance(
@@ -99,7 +115,7 @@ fn check_circular_inheritance(
                 .parents
                 .iter()
                 .filter_map(|p| match p {
-                    TypeRef::Named { name, .. } => Some(name.last()),
+                    TypeRef::Named { name, .. } => Some(name.full()),
                     _ => None,
                 })
                 .collect();

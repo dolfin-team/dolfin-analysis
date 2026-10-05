@@ -7,7 +7,10 @@
 use rowl::{
     Declaration, OntologyFile,
     ast::{
-        HasDeclaration, Pattern, RuleDef, ThenBlock, ThenItem, TypeRef,
+        AggregationQuery, Constraint, ConstraintBlock, DisjBranch, ExistenceBlock, FactAssertion,
+        FactDef, FactValue, HasDeclaration, InverseTriple, Object, Pattern, PropertyPattern,
+        QueryClause, QueryComposition, QueryDef, RuleDef, SubjectBlock, SubjectPattern, ThenBlock,
+        ThenItem, TypeRef,
     },
     error::Span,
 };
@@ -36,7 +39,11 @@ pub fn find_references_in_file(file: &OntologyFile, target: &str) -> Vec<Span> {
             Declaration::Rule(r) => {
                 collect_rule(r, target, &mut out);
             }
-            Declaration::Fact(_) => {}
+            Declaration::Query(q) => {
+                collect_query(q, target, &mut out);
+            }
+            Declaration::Fact(f) => collect_fact(f, target, &mut out),
+            Declaration::Unit(_) => {}
         }
     }
     out
@@ -44,17 +51,88 @@ pub fn find_references_in_file(file: &OntologyFile, target: &str) -> Vec<Span> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn collect_fact(f: &FactDef, target: &str, out: &mut Vec<Span>) {
+    for type_qn in &f.types {
+        if name_matches(type_qn, target)
+            && let Some(s) = type_qn.span {
+                out.push(s);
+            }
+    }
+    for assertion in &f.assertions {
+        collect_fact_assertion(assertion, target, out);
+    }
+}
+
+fn collect_fact_assertion(assertion: &FactAssertion, target: &str, out: &mut Vec<Span>) {
+    match assertion {
+        FactAssertion::Property { property, values, .. } => {
+            if name_matches(property, target)
+                && let Some(s) = property.span {
+                    out.push(s);
+                }
+            for v in values {
+                collect_fact_value(v, target, out);
+            }
+        }
+        FactAssertion::Inverse { property, value, .. } => {
+            if name_matches(property, target)
+                && let Some(s) = property.span {
+                    out.push(s);
+                }
+            collect_fact_value(value, target, out);
+        }
+        FactAssertion::TypeHint { type_ref, .. } => {
+            if name_matches(type_ref, target)
+                && let Some(s) = type_ref.span {
+                    out.push(s);
+                }
+        }
+    }
+}
+
+fn collect_fact_value(value: &FactValue, target: &str, out: &mut Vec<Span>) {
+    match value {
+        // `:Name` is the package namespace, which declares nothing.
+        FactValue::Reference { qualifier: None, .. } => {}
+        FactValue::Reference { name, span, .. } => {
+            if name == target
+                && let Some(s) = span {
+                    out.push(*s);
+                }
+        }
+        FactValue::Named { name, .. } => {
+            if name_matches(name, target)
+                && let Some(s) = name.span {
+                    out.push(s);
+                }
+        }
+        FactValue::Block { assertions, .. } => {
+            for a in assertions {
+                collect_fact_assertion(a, target, out);
+            }
+        }
+        FactValue::Literal { .. } => {}
+    }
+}
+
 fn name_matches(name: &rowl::ast::QualifiedName, target: &str) -> bool {
     name.full() == target || name.last() == target
 }
 
 fn collect_type_ref(tr: &TypeRef, target: &str, out: &mut Vec<Span>) {
-    if let TypeRef::Named { name, span } = tr {
-        if name_matches(name, target) {
-            if let Some(s) = span {
-                out.push(*s);
+    match tr {
+        TypeRef::Named { name, span } => {
+            if name_matches(name, target)
+                && let Some(s) = span {
+                    out.push(*s);
+                }
+        }
+        TypeRef::Union { members, .. } => {
+            for m in members {
+                collect_type_ref(m, target, out);
             }
         }
+        TypeRef::Primitive { .. } => {}
     }
 }
 
@@ -74,40 +152,205 @@ fn collect_pattern(p: &Pattern, target: &str, out: &mut Vec<Span>) {
         Pattern::Type { type_ref, .. } => {
             collect_type_ref(type_ref, target, out);
         }
-        Pattern::Quantified { patterns, .. } => {
+        Pattern::Quantified { patterns, constraint, .. } => {
             for inner in patterns {
                 collect_pattern(inner, target, out);
             }
+            if let Some(cb) = constraint {
+                collect_constraint_block(cb, target, out);
+            }
         }
-        Pattern::Triple { property, .. } => {
-            if name_matches(property, target) {
-                if let Some(s) = property.span {
+        Pattern::Triple { property, object, .. } => {
+            if name_matches(property, target)
+                && let Some(s) = property.span {
                     out.push(s);
                 }
+            collect_object(object, target, out);
+        }
+        Pattern::QueryCall { name, args: _, .. } => {
+            if name_matches(name, target)
+                && let Some(s) = name.span {
+                    out.push(s);
+                }
+        }
+        Pattern::Inverse { property, object, .. } => {
+            if name_matches(property, target)
+                && let Some(s) = property.span {
+                    out.push(s);
+                }
+            collect_object(object, target, out);
+        }
+    }
+}
+
+fn collect_constraint_block(cb: &ConstraintBlock, target: &str, out: &mut Vec<Span>) {
+    for c in &cb.constraints {
+        match c {
+            Constraint::TypeIs { type_ref, .. } => {
+                collect_type_ref(type_ref, target, out);
+            }
+            Constraint::PropertyValue { property, value, .. } => {
+                if name_matches(property, target)
+                    && let Some(s) = property.span {
+                        out.push(s);
+                    }
+                collect_object(value, target, out);
+            }
+            Constraint::PropertyConstraint { property, block, .. } => {
+                if name_matches(property, target)
+                    && let Some(s) = property.span {
+                        out.push(s);
+                    }
+                collect_constraint_block(block, target, out);
+            }
+            Constraint::Comparison { .. } => {}
+            Constraint::Inverse { property, value, .. } => {
+                if name_matches(property, target)
+                    && let Some(s) = property.span {
+                        out.push(s);
+                    }
+                collect_object(value, target, out);
+            }
+            Constraint::InverseNested { property, block, .. } => {
+                if name_matches(property, target)
+                    && let Some(s) = property.span {
+                        out.push(s);
+                    }
+                collect_constraint_block(block, target, out);
             }
         }
     }
+}
+
+fn collect_query(q: &QueryDef, target: &str, out: &mut Vec<Span>) {
+    collect_query_clauses(&q.body.clauses, target, out);
+}
+
+fn collect_query_clauses(clauses: &[QueryClause], target: &str, out: &mut Vec<Span>) {
+    for clause in clauses {
+        match clause {
+            QueryClause::Composition(qc) => collect_composition(qc, target, out),
+            QueryClause::SubjectPattern(sp) => collect_subject_pattern(sp, target, out),
+            QueryClause::ExistenceBlock(eb) => collect_existence_block(eb, target, out),
+            QueryClause::InverseTriple(it) => collect_inverse_triple(it, target, out),
+            QueryClause::AggregationQuery(aq) => collect_aggregation(aq, target, out),
+            // Boolean filters compare variables and literals — no named symbols.
+            QueryClause::BooleanFilter(_) => {}
+        }
+    }
+}
+
+fn collect_subject_pattern(sp: &SubjectPattern, target: &str, out: &mut Vec<Span>) {
+    if let Some(tr) = &sp.type_ref {
+        collect_type_ref(tr, target, out);
+    }
+    for pp in &sp.properties {
+        collect_property_pattern(pp, target, out);
+    }
+}
+
+fn collect_subject_block(sb: &SubjectBlock, target: &str, out: &mut Vec<Span>) {
+    for pp in &sb.properties {
+        collect_property_pattern(pp, target, out);
+    }
+}
+
+fn collect_existence_block(eb: &ExistenceBlock, target: &str, out: &mut Vec<Span>) {
+    collect_query_clauses(&eb.clauses, target, out);
+}
+
+fn collect_aggregation(aq: &AggregationQuery, target: &str, out: &mut Vec<Span>) {
+    collect_query_clauses(&aq.sub_clauses, target, out);
+}
+
+fn collect_inverse_triple(it: &InverseTriple, target: &str, out: &mut Vec<Span>) {
+    if name_matches(&it.property, target)
+        && let Some(s) = it.property.span {
+            out.push(s);
+        }
+    collect_object(&it.object, target, out);
+}
+
+fn collect_property_pattern(pp: &PropertyPattern, target: &str, out: &mut Vec<Span>) {
+    let push_property = |property: &rowl::ast::QualifiedName, out: &mut Vec<Span>| {
+        if name_matches(property, target)
+            && let Some(s) = property.span {
+                out.push(s);
+            }
+    };
+    match pp {
+        PropertyPattern::Value { property, object, .. }
+        | PropertyPattern::Optional { property, object, .. } => {
+            push_property(property, out);
+            collect_object(object, target, out);
+        }
+        PropertyPattern::Constrained { property, block, .. }
+        | PropertyPattern::InverseNested { property, block, .. } => {
+            push_property(property, out);
+            collect_constraint_block(block, target, out);
+        }
+        PropertyPattern::Inverse { property, .. } => push_property(property, out),
+        PropertyPattern::Nested { property, block, .. } => {
+            push_property(property, out);
+            collect_subject_block(block, target, out);
+        }
+        PropertyPattern::Disjunction { either_branch, or_branches, .. } => {
+            collect_disj_branch(either_branch, target, out);
+            for b in or_branches {
+                collect_disj_branch(b, target, out);
+            }
+        }
+    }
+}
+
+fn collect_disj_branch(b: &DisjBranch, target: &str, out: &mut Vec<Span>) {
+    if name_matches(&b.property, target)
+        && let Some(s) = b.property.span {
+            out.push(s);
+        }
+    collect_constraint_block(&b.block, target, out);
+}
+
+/// An object position can hold a nested constraint block *or* a named constant
+/// (`status OVERDUE`) — the latter is how `one of:` individuals are referenced.
+fn collect_object(o: &Object, target: &str, out: &mut Vec<Span>) {
+    match o {
+        Object::Constraint { block } => collect_constraint_block(block, target, out),
+        Object::Constant { value, span } => {
+            if name_matches(value, target)
+                && let Some(s) = value.span.or(*span) {
+                    out.push(s);
+                }
+        }
+        Object::Variable { .. } | Object::Literal { .. } => {}
+    }
+}
+
+fn collect_composition(qc: &QueryComposition, target: &str, out: &mut Vec<Span>) {
+    if name_matches(&qc.query_name, target)
+        && let Some(s) = qc.span {
+            out.push(s);
+        }
 }
 
 fn collect_then(then: &ThenBlock, target: &str, out: &mut Vec<Span>) {
     for item in &then.items {
         match item {
             ThenItem::AssertionTyping { typing, span, .. } => {
-                if name_matches(typing, target) {
-                    if let Some(s) = span {
+                if name_matches(typing, target)
+                    && let Some(s) = span {
                         out.push(*s);
                     }
-                }
             }
             ThenItem::NestedRule { rule } => {
                 collect_rule(rule, target, out);
             }
             ThenItem::AssertionTriple { assertion, .. } => {
-                if name_matches(&assertion.property, target) {
-                    if let Some(s) = assertion.property.span {
+                if name_matches(&assertion.property, target)
+                    && let Some(s) = assertion.property.span {
                         out.push(s);
                     }
-                }
+                collect_object(&assertion.object, target, out);
             }
         }
     }

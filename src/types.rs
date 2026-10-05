@@ -22,26 +22,12 @@ pub fn check_types(file: &OntologyFile, index: &SymbolIndex) -> Vec<Diagnostic> 
         match decl {
             Declaration::Concept(c) => {
                 for parent in &c.parents {
-                    if let TypeRef::Named { name, span } = parent {
-                        let resolved = index.get(&name.last()).or_else(|| index.get(&name.full()));
-                        if let Some(sym) = resolved {
-                            if sym.kind != SymbolKind::Concept {
-                                diags.push(
-                                    DiagnosticBuilder::error(
-                                        DiagnosticCode::Semantic(4),
-                                        format!(
-                                            "`{}` is a {}, not a concept; \
-                                             only concepts can appear after `sub`",
-                                            name.last(),
-                                            kind_label(&sym.kind),
-                                        ),
-                                    )
-                                    .span_opt(span.map(Into::into))
-                                    .build(),
-                                );
-                            }
-                        }
-                    }
+                    check_is_concept_type_ref(parent, index, 4, &|name, kind| {
+                        format!(
+                            "`{name}` is a {kind}, not a concept; \
+                             only concepts can appear after `sub`"
+                        )
+                    }, &mut diags);
                 }
 
                 for has in &c.has_declarations {
@@ -52,25 +38,9 @@ pub fn check_types(file: &OntologyFile, index: &SymbolIndex) -> Vec<Diagnostic> 
             }
 
             Declaration::Property(p) => {
-                if let TypeRef::Named { name, span } = &p.domain {
-                    let resolved = index.get(&name.last()).or_else(|| index.get(&name.full()));
-                    if let Some(sym) = resolved {
-                        if sym.kind != SymbolKind::Concept {
-                            diags.push(
-                                DiagnosticBuilder::error(
-                                    DiagnosticCode::Semantic(5),
-                                    format!(
-                                        "property domain `{}` must be a concept, not a {}",
-                                        name.last(),
-                                        kind_label(&sym.kind),
-                                    ),
-                                )
-                                .span_opt(span.map(Into::into))
-                                .build(),
-                            );
-                        }
-                    }
-                }
+                check_is_concept_type_ref(&p.domain, index, 5, &|name, kind| {
+                    format!("property domain `{name}` must be a concept, not a {kind}")
+                }, &mut diags);
 
                 if let Some(card) = &p.domain_cardinality {
                     check_cardinality(card, p.span, &mut diags);
@@ -82,10 +52,45 @@ pub fn check_types(file: &OntologyFile, index: &SymbolIndex) -> Vec<Diagnostic> 
 
             Declaration::Rule(_) => {}
             Declaration::Fact(_) => {}
+            Declaration::Query(_) => {}
+            Declaration::Unit(_) => {}
         }
     }
 
     diags
+}
+
+/// Checks a (possibly `Union`) type reference names only concepts, recursing
+/// into every union member so `(A or B)` is checked member-by-member.
+fn check_is_concept_type_ref(
+    type_ref: &TypeRef,
+    index: &SymbolIndex,
+    code: u16,
+    msg: &dyn Fn(&str, &str) -> String,
+    diags: &mut Vec<Diagnostic>,
+) {
+    match type_ref {
+        TypeRef::Named { name, span } => {
+            let resolved = index.get(&name.last()).or_else(|| index.get(&name.full()));
+            if let Some(sym) = resolved
+                && sym.kind != SymbolKind::Concept {
+                    diags.push(
+                        DiagnosticBuilder::error(
+                            DiagnosticCode::Semantic(code),
+                            msg(&name.last(), kind_label(&sym.kind)),
+                        )
+                        .span_opt(span.map(Into::into))
+                        .build(),
+                    );
+                }
+        }
+        TypeRef::Union { members, .. } => {
+            for m in members {
+                check_is_concept_type_ref(m, index, code, msg, diags);
+            }
+        }
+        TypeRef::Primitive { .. } => {}
+    }
 }
 
 fn check_cardinality(card: &Cardinality, span: Option<Span>, diags: &mut Vec<Diagnostic>) {
@@ -93,8 +98,8 @@ fn check_cardinality(card: &Cardinality, span: Option<Span>, diags: &mut Vec<Dia
         min,
         max: Some(max),
         ..
-    } = card {
-        if min > max {
+    } = card
+        && min > max {
             diags.push(
                 DiagnosticBuilder::error(
                     DiagnosticCode::Semantic(6),
@@ -104,7 +109,6 @@ fn check_cardinality(card: &Cardinality, span: Option<Span>, diags: &mut Vec<Dia
                 .build(),
             );
         }
-    }
 }
 
 fn kind_label(kind: &SymbolKind) -> &'static str {
@@ -112,7 +116,9 @@ fn kind_label(kind: &SymbolKind) -> &'static str {
         SymbolKind::Concept => "concept",
         SymbolKind::Property => "property",
         SymbolKind::Rule => "rule",
+        SymbolKind::Query => "query",
         SymbolKind::Prefix => "prefix",
         SymbolKind::Individual { .. } => "individual",
+        SymbolKind::FactInstance => "fact",
     }
 }

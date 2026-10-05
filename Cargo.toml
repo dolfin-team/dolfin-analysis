@@ -1,6 +1,6 @@
 [package]
 name = "dolfin-analysis"
-version = "0.1.6"
+version = "0.1.10"
 edition = "2024"
 license = "MIT"
 keywords = ["semantic-web", "ontology", "dolfin", "knowledge-graph", "language"]
@@ -11,6 +11,8 @@ repository = "https://github.com/dolfin-team/dolfin-analysis"
 readme = "README.md"
 
 [dependencies]
-rowl = "0.1.6"
-dolfin-diagnostic = "0.1.3"
+rowl = "0.1.10"
+dolfin-diagnostic = "0.1.9"
+dolfin-units = "0.1.9"
 thiserror = "2.0.18"
+nucleo-matcher = "0.3"
